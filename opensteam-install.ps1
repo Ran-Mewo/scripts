@@ -1,5 +1,7 @@
 # =============================================
 # OpenSteam + Luatools Plugin + Millennium Installer
+# - OpenSteamTool & ltsteamplugin sourced from mirrored repos (highest version wins)
+# - Enables the luatools plugin in Millennium and skips its first-load disclaimer
 # =============================================
 
 $SelfUrl = 'https://raw.githubusercontent.com/Ran-Mewo/scripts/refs/heads/main/opensteam-install.ps1'
@@ -14,8 +16,8 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     exit
 }
 
-$OpenSteamRepo = "OpenSteam001/OpenSteamTool"
-$LtPluginRepos = @('madoiscool/ltsteamplugin','piqseu/ltsteamplugin')
+$OpenSteamRepos = @('OpenSteam001/OpenSteamTool','Ran-Mewo/OpenSteamTool')
+$LtPluginRepos  = @('madoiscool/ltsteamplugin','piqseu/ltsteamplugin')
 $MillenniumUrls = @(
     'https://clemdotla.github.io/millennium-installer-ps1/millennium.ps1'
 )
@@ -61,12 +63,28 @@ function Get-LatestZipUrl($repo, $pattern) {
     "https://github.com$href"
 }
 
+function Get-LatestReleaseInfo($repo) {
+    # Use the releases atom feed (not the rate-limited API) for the newest release's tag + date.
+    $feed = Invoke-WebRequest -Uri "https://github.com/$repo/releases.atom" -UseBasicParsing
+    $xml  = [xml]$feed.Content
+    $entry = @($xml.feed.entry)[0]
+    if (-not $entry) { Write-Err "No releases found for $repo"; exit 1 }
+    [pscustomobject]@{
+        Repo = $repo
+        Tag  = ($entry.id -split '/')[-1]   # e.g. .../1.4.8 -> 1.4.8
+        Date = [datetime]$entry.updated
+    }
+}
+
+function Resolve-LatestRepo($repos) {
+    # Pick the repo whose latest release is the most recently published (by date, not version).
+    $best = $repos | ForEach-Object { Get-LatestReleaseInfo $_ } |
+        Sort-Object Date -Descending | Select-Object -First 1
+    $best
+}
+
 function Resolve-LatestPlugin($repos) {
-    # Pick the repo whose latest release tag has the highest [version].
-    $best = $repos | ForEach-Object {
-        $tag = Get-LatestReleaseTag $_
-        [pscustomobject]@{ Repo = $_; Tag = $tag; Version = [version]($tag -replace '^v','') }
-    } | Sort-Object Version -Descending | Select-Object -First 1
+    $best = Resolve-LatestRepo $repos
     Write-Ok "Latest plugin: $($best.Repo) @ $($best.Tag)"
     "https://github.com/$($best.Repo)/releases/download/$($best.Tag)/ltsteamplugin.zip"
 }
@@ -97,13 +115,46 @@ function New-DirSymlink($link, $target) {
     Write-Ok "Linked: $link -> $target"
 }
 
-function Set-PluginFastDownload($pluginDir) {
-    $cfgPath = Join-Path $pluginDir 'backend\data\settings.json'
-    if (-not (Test-Path $cfgPath)) { Write-Warn "settings.json not found, skipping fastDownload."; return }
-    $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $cfg.values.general.fastDownload = $true
-    $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
-    Write-Ok "Enabled fastDownload in plugin settings."
+function Enable-Plugin($steamPath, $pluginName) {
+    # Millennium tracks enabled plugins in millennium\config\config.json under plugins.enabledPlugins.
+    $cfgDir  = Join-Path $steamPath 'millennium\config'
+    $cfgPath = Join-Path $cfgDir 'config.json'
+    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+
+    if (Test-Path $cfgPath) {
+        $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } else {
+        $cfg = [pscustomobject]@{}
+    }
+    if (-not $cfg.PSObject.Properties['plugins']) {
+        $cfg | Add-Member -NotePropertyName plugins -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if (-not $cfg.plugins.PSObject.Properties['enabledPlugins']) {
+        $cfg.plugins | Add-Member -NotePropertyName enabledPlugins -NotePropertyValue @() -Force
+    }
+
+    $enabled = @($cfg.plugins.enabledPlugins)
+    if ($enabled -contains $pluginName) {
+        Write-Ok "Plugin '$pluginName' already enabled."
+        return
+    }
+    $cfg.plugins.enabledPlugins = @($enabled + $pluginName)
+    $cfg | ConvertTo-Json -Depth 20 | Set-Content $cfgPath -Encoding UTF8
+    Write-Ok "Enabled plugin '$pluginName' in Millennium config."
+}
+
+function Disable-LuatoolsDisclaimer($pluginDir) {
+    # luatools shows a one-time "type I Understand" modal gated on a localStorage flag.
+    # Pre-seed the flag inside its frontend bundle so the modal never appears.
+    $jsPath = Join-Path $pluginDir 'public\luatools.js'
+    if (-not (Test-Path $jsPath)) { Write-Warn "luatools.js not found, skipping disclaimer bypass."; return }
+    $key    = 'luatools millennium disclaimer accepted'
+    $marker = '/* opensteam-install: disclaimer pre-accepted */'
+    $js     = Get-Content $jsPath -Raw -Encoding UTF8
+    if ($js.Contains($marker)) { Write-Ok "Disclaimer bypass already present."; return }
+    $seed = "try{localStorage.setItem(`"$key`",`"1`");}catch(e){} $marker`r`n"
+    Set-Content $jsPath -Value ($seed + $js) -Encoding UTF8
+    Write-Ok "Pre-accepted luatools disclaimer."
 }
 
 function Test-Millennium($steamPath) {
@@ -137,8 +188,10 @@ try {
     Write-Ok "Steam: $SteamPath"
 
     Write-Step "Installing OpenSteamTool"
+    $openBest = Resolve-LatestRepo $OpenSteamRepos
+    Write-Ok "Latest OpenSteamTool: $($openBest.Repo) @ $($openBest.Tag)"
     $openZip = Join-Path $Tmp 'opensteamtool.zip'
-    Get-File (Get-LatestZipUrl $OpenSteamRepo 'Release\.zip$') $openZip
+    Get-File (Get-LatestZipUrl $openBest.Repo 'Release\.zip$') $openZip
     Expand-Into $openZip $SteamPath
     Remove-Item $openZip -Force -ErrorAction SilentlyContinue
     Write-Ok "OpenSteamTool extracted to Steam."
@@ -159,7 +212,7 @@ try {
     Get-File (Resolve-LatestPlugin $LtPluginRepos) $ltZip
     Expand-Into $ltZip $pluginDir
     Remove-Item $ltZip -Force -ErrorAction SilentlyContinue
-    Set-PluginFastDownload $pluginDir
+    Disable-LuatoolsDisclaimer $pluginDir
 
     Write-Step "Installing Millennium"
     $hasMillennium = Test-Millennium $SteamPath
@@ -174,6 +227,9 @@ try {
     } else {
         Write-Ok "Skipping Millennium."
     }
+
+    Write-Step "Enabling luatools plugin"
+    Enable-Plugin $SteamPath 'luatools'
 
     Write-Host "`nAll done. Steam patched at: $SteamPath" -ForegroundColor Magenta
 }
