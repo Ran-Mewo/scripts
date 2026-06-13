@@ -187,6 +187,8 @@ try {
     $SteamPath = Find-SteamPath
     Write-Ok "Steam: $SteamPath"
 
+    $hasMillennium = Test-Millennium $SteamPath
+
     Write-Step "Installing OpenSteamTool"
     $openBest = Resolve-LatestRepo $OpenSteamRepos
     Write-Ok "Latest OpenSteamTool: $($openBest.Repo) @ $($openBest.Tag)"
@@ -215,7 +217,6 @@ try {
     Disable-LuatoolsDisclaimer $pluginDir
 
     Write-Step "Installing Millennium"
-    $hasMillennium = Test-Millennium $SteamPath
     $doInstall     = $true
     if ($hasMillennium) {
         $reply = Read-Host "Millennium is already installed. Update it? [y/N]"
