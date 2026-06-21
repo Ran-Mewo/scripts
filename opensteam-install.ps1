@@ -49,14 +49,7 @@ function Find-SteamPath {
     $candidates[0]
 }
 
-function Get-LatestReleaseTag($repo) {
-    $r = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" `
-        -UseBasicParsing -MaximumRedirection 0 -ErrorAction SilentlyContinue
-    ($r.Headers.Location -split '/')[-1]
-}
-
-function Get-LatestZipUrl($repo, $pattern) {
-    $tag  = Get-LatestReleaseTag $repo
+function Get-LatestZipUrl($repo, $tag, $pattern) {
     $page = Invoke-WebRequest -Uri "https://github.com/$repo/releases/expanded_assets/$tag" -UseBasicParsing
     $href = $page.Links.href | Where-Object { $_ -match $pattern } | Select-Object -First 1
     if (-not $href) { Write-Err "No asset matching '$pattern' in ${repo}@${tag}"; exit 1 }
@@ -218,7 +211,7 @@ try {
     $openBest = Resolve-LatestRepo $OpenSteamRepos
     Write-Ok "Latest OpenSteamTool: $($openBest.Repo) @ $($openBest.Tag)"
     $openZip = Join-Path $Tmp 'opensteamtool.zip'
-    Get-File (Get-LatestZipUrl $openBest.Repo 'Release\.zip$') $openZip
+    Get-File (Get-LatestZipUrl $openBest.Repo $openBest.Tag 'Release\.zip$') $openZip
     Expand-Into $openZip $SteamPath
     Remove-Item $openZip -Force -ErrorAction SilentlyContinue
     Write-Ok "OpenSteamTool extracted to Steam."
