@@ -99,6 +99,31 @@ function Expand-Into($zip, $dest) {
     Expand-Archive -Path $zip -DestinationPath $dest -Force
 }
 
+function Find-PluginRoot($dir) {
+    # Some release zips put the plugin files at the root; others nest them one (or more)
+    # levels deep inside a wrapper folder. Locate the folder that actually holds the plugin
+    # by finding its plugin.json manifest and returning that directory.
+    $manifest = Get-ChildItem -Path $dir -Filter 'plugin.json' -Recurse -File -ErrorAction SilentlyContinue |
+        Sort-Object { $_.FullName.Length } | Select-Object -First 1
+    if ($manifest) { return $manifest.Directory.FullName }
+    # Fallback: if the zip wrapped everything in a single subfolder, descend into it.
+    $entries = @(Get-ChildItem -Path $dir -Force)
+    if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) { return $entries[0].FullName }
+    $dir
+}
+
+function Expand-Plugin($zip, $dest) {
+    # Extract to a staging dir, normalize away any wrapper folder, then copy the real
+    # plugin contents into $dest so the layout is always luatools\plugin.json, luatools\public\...
+    $stage = Join-Path $Tmp ('ltstage-' + [IO.Path]::GetFileNameWithoutExtension($zip))
+    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    Expand-Archive -Path $zip -DestinationPath $stage -Force
+    $root = Find-PluginRoot $stage
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Get-ChildItem -Path $root -Force | Move-Item -Destination $dest -Force
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 function New-DirSymlink($link, $target) {
     New-Item -ItemType Directory -Force -Path $target | Out-Null
     if (Test-Path $link) {
@@ -212,7 +237,7 @@ try {
         Remove-Item $pluginDir -Recurse -Force
     }
     Get-File (Resolve-LatestPlugin $LtPluginRepos) $ltZip
-    Expand-Into $ltZip $pluginDir
+    Expand-Plugin $ltZip $pluginDir
     Remove-Item $ltZip -Force -ErrorAction SilentlyContinue
     Disable-LuatoolsDisclaimer $pluginDir
 
