@@ -18,6 +18,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 $OpenSteamRepos = @('OpenSteam001/OpenSteamTool','Ran-Mewo/OpenSteamTool')
 $LtPluginRepos  = @('madoiscool/ltsteamplugin','piqseu/ltsteamplugin')
+$OnlineFixRepo  = 'Ran-Mewo/OnlineFix'
 $MillenniumUrls = @(
     'https://clemdotla.github.io/millennium-installer-ps1/millennium.ps1'
 )
@@ -193,6 +194,40 @@ function Install-Millennium($steamPath) {
     throw "Could not fetch the Millennium installer."
 }
 
+function Install-OnlineFix($steamPath) {
+    # Download the latest OnlineFix.dll next to OpenSteamTool.dll (Steam root),
+    # then ensure opensteamtool.toml injects it for the -onlinefix command line.
+    $best = Get-LatestReleaseInfo $OnlineFixRepo
+    Write-Ok "Latest OnlineFix: $($best.Repo) @ $($best.Tag)"
+    Get-File (Get-LatestZipUrl $best.Repo $best.Tag 'OnlineFix\.dll$') (Join-Path $steamPath 'OnlineFix.dll')
+    Write-Ok "OnlineFix.dll downloaded."
+
+    # Append an [[inject]] table only if one for OnlineFix.dll isn't already present;
+    # we only ever add to the file so any other values the user has are left intact.
+    $tomlPath = Join-Path $steamPath 'opensteamtool.toml'
+    $block = @(
+        '[[inject]]'
+        'path = "OnlineFix.dll"'
+        'when_cmdline = "-onlinefix"'
+    ) -join "`r`n"
+    $utf8 = New-Object System.Text.UTF8Encoding $false   # no BOM (TOML parsers can choke on it)
+
+    if (Test-Path $tomlPath) {
+        $existing = Get-Content $tomlPath -Raw -Encoding UTF8
+        if ($existing -match '(?im)^\s*path\s*=\s*"OnlineFix\.dll"\s*$') {
+            Write-Ok "opensteamtool.toml already injects OnlineFix.dll."
+            return
+        }
+        $trimmed = $existing.TrimEnd()
+        $content = if ($trimmed.Length) { "$trimmed`r`n`r`n$block`r`n" } else { "$block`r`n" }
+        [System.IO.File]::WriteAllText($tomlPath, $content, $utf8)
+        Write-Ok "Added OnlineFix inject block to opensteamtool.toml."
+    } else {
+        [System.IO.File]::WriteAllText($tomlPath, "$block`r`n", $utf8)
+        Write-Ok "Created opensteamtool.toml with OnlineFix inject block."
+    }
+}
+
 # ==================== MAIN ====================
 
 try {
@@ -215,6 +250,9 @@ try {
     Expand-Into $openZip $SteamPath
     Remove-Item $openZip -Force -ErrorAction SilentlyContinue
     Write-Ok "OpenSteamTool extracted to Steam."
+
+    Write-Step "Installing OnlineFix"
+    Install-OnlineFix $SteamPath
 
     Write-Step "Linking config\stplug-in -> config\lua"
     $cfg = Join-Path $SteamPath 'config'
