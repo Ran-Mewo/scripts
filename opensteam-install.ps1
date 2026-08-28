@@ -1,7 +1,7 @@
 # =============================================
 # OpenSteam + Luatools Plugin + Millennium Installer
-# - OpenSteamTool & ltsteamplugin sourced from mirrored repos (highest version wins)
-# - Enables the luatools plugin in Millennium and skips its first-load disclaimer
+# - OpenSteamTool sourced from mirrored repos (highest version wins)
+# - LuaTools installs as a Millennium .star plugin from the latest GitHub release
 # =============================================
 
 $SelfUrl = 'https://raw.githubusercontent.com/Ran-Mewo/scripts/refs/heads/main/opensteam-install.ps1'
@@ -17,7 +17,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 $OpenSteamRepos = @('OpenSteam001/OpenSteamTool','Ran-Mewo/OpenSteamTool')
-$LtPluginRepos  = @('madoiscool/ltsteamplugin','piqseu/ltsteamplugin')
+$LtPluginRepo   = 'Ran-Mewo/ltsteamplugin'
 $OnlineFixRepo  = 'Ran-Mewo/OnlineFix'
 $MillenniumUrls = @(
     'https://clemdotla.github.io/millennium-installer-ps1/millennium.ps1'
@@ -77,10 +77,10 @@ function Resolve-LatestRepo($repos) {
     $best
 }
 
-function Resolve-LatestPlugin($repos) {
-    $best = Resolve-LatestRepo $repos
-    Write-Ok "Latest plugin: $($best.Repo) @ $($best.Tag)"
-    "https://github.com/$($best.Repo)/releases/download/$($best.Tag)/ltsteamplugin.zip"
+function Resolve-LatestPlugin {
+    $best = Get-LatestReleaseInfo $LtPluginRepo
+    Write-Ok "Latest LuaTools plugin: $($best.Repo) @ $($best.Tag)"
+    "https://github.com/$($best.Repo)/releases/latest/download/luatools.star"
 }
 
 function Get-File($url, $dest) {
@@ -91,31 +91,6 @@ function Get-File($url, $dest) {
 function Expand-Into($zip, $dest) {
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Expand-Archive -Path $zip -DestinationPath $dest -Force
-}
-
-function Find-PluginRoot($dir) {
-    # Some release zips put the plugin files at the root; others nest them one (or more)
-    # levels deep inside a wrapper folder. Locate the folder that actually holds the plugin
-    # by finding its plugin.json manifest and returning that directory.
-    $manifest = Get-ChildItem -Path $dir -Filter 'plugin.json' -Recurse -File -ErrorAction SilentlyContinue |
-        Sort-Object { $_.FullName.Length } | Select-Object -First 1
-    if ($manifest) { return $manifest.Directory.FullName }
-    # Fallback: if the zip wrapped everything in a single subfolder, descend into it.
-    $entries = @(Get-ChildItem -Path $dir -Force)
-    if ($entries.Count -eq 1 -and $entries[0].PSIsContainer) { return $entries[0].FullName }
-    $dir
-}
-
-function Expand-Plugin($zip, $dest) {
-    # Extract to a staging dir, normalize away any wrapper folder, then copy the real
-    # plugin contents into $dest so the layout is always luatools\plugin.json, luatools\public\...
-    $stage = Join-Path $Tmp ('ltstage-' + [IO.Path]::GetFileNameWithoutExtension($zip))
-    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-    Expand-Archive -Path $zip -DestinationPath $stage -Force
-    $root = Find-PluginRoot $stage
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    Get-ChildItem -Path $root -Force | Move-Item -Destination $dest -Force
-    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 function New-DirSymlink($link, $target) {
@@ -160,20 +135,6 @@ function Enable-Plugin($steamPath, $pluginName) {
     $cfg.plugins.enabledPlugins = @($enabled + $pluginName)
     $cfg | ConvertTo-Json -Depth 20 | Set-Content $cfgPath -Encoding UTF8
     Write-Ok "Enabled plugin '$pluginName' in Millennium config."
-}
-
-function Disable-LuatoolsDisclaimer($pluginDir) {
-    # luatools shows a one-time "type I Understand" modal gated on a localStorage flag.
-    # Pre-seed the flag inside its frontend bundle so the modal never appears.
-    $jsPath = Join-Path $pluginDir 'public\luatools.js'
-    if (-not (Test-Path $jsPath)) { Write-Warn "luatools.js not found, skipping disclaimer bypass."; return }
-    $key    = 'luatools millennium disclaimer accepted'
-    $marker = '/* opensteam-install: disclaimer pre-accepted */'
-    $js     = Get-Content $jsPath -Raw -Encoding UTF8
-    if ($js.Contains($marker)) { Write-Ok "Disclaimer bypass already present."; return }
-    $seed = "try{localStorage.setItem(`"$key`",`"1`");}catch(e){} $marker`r`n"
-    Set-Content $jsPath -Value ($seed + $js) -Encoding UTF8
-    Write-Ok "Pre-accepted luatools disclaimer."
 }
 
 function Test-Millennium($steamPath) {
@@ -259,18 +220,23 @@ try {
     New-Item -ItemType Directory -Force -Path $cfg | Out-Null
     New-DirSymlink (Join-Path $cfg 'stplug-in') (Join-Path $cfg 'lua')
 
-    Write-Step "Installing ltsteamplugin (luatools)"
-    $ltZip       = Join-Path $Tmp 'ltsteamplugin.zip'
-    $pluginsRoot = if (Test-Path (Join-Path $SteamPath 'plugins')) { Join-Path $SteamPath 'plugins' } else { Join-Path $SteamPath 'millennium\plugins' }
-    $pluginDir   = Join-Path $pluginsRoot 'luatools'
-    if (Test-Path $pluginDir) {
-        Write-Warn "Removing existing luatools folder..."
-        Remove-Item $pluginDir -Recurse -Force
+    Write-Step "Installing LuaTools Millennium plugin"
+    $ltStar = Join-Path $Tmp 'luatools.star'
+    $pluginsRoot = Join-Path $SteamPath 'millennium\plugins'
+    New-Item -ItemType Directory -Force -Path $pluginsRoot | Out-Null
+
+    foreach ($legacyName in @('luatools', 'ltsteamplugin')) {
+        $legacyPath = Join-Path $pluginsRoot $legacyName
+        if (Test-Path $legacyPath) {
+            Write-Warn "Removing existing $legacyName folder..."
+            Remove-Item $legacyPath -Recurse -Force
+        }
     }
-    Get-File (Resolve-LatestPlugin $LtPluginRepos) $ltZip
-    Expand-Plugin $ltZip $pluginDir
-    Remove-Item $ltZip -Force -ErrorAction SilentlyContinue
-    Disable-LuatoolsDisclaimer $pluginDir
+
+    Get-File (Resolve-LatestPlugin) $ltStar
+    Copy-Item $ltStar (Join-Path $pluginsRoot 'luatools.star') -Force
+    Remove-Item $ltStar -Force -ErrorAction SilentlyContinue
+    Write-Ok "LuaTools plugin installed."
 
     Write-Step "Installing Millennium"
     $doInstall     = $true
