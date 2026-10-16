@@ -19,9 +19,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 $OpenSteamRepos = @('OpenSteam001/OpenSteamTool','Ran-Mewo/OpenSteamTool')
 $LtPluginRepo   = 'Ran-Mewo/ltsteamplugin'
 $OnlineFixRepo  = 'Ran-Mewo/OnlineFix'
-$MillenniumUrls = @(
-    'https://clemdotla.github.io/millennium-installer-ps1/millennium.ps1'
-)
+$MillenniumRepo = 'SteamClientHomebrew/Millennium'
 $SteamDefault  = "C:\Program Files (x86)\Steam"
 $Tmp           = $env:TEMP
 
@@ -143,16 +141,13 @@ function Test-Millennium($steamPath) {
 }
 
 function Install-Millennium($steamPath) {
-    foreach ($url in $MillenniumUrls) {
-        try {
-            $code = Invoke-RestMethod $url -TimeoutSec 30
-            if ($code) {
-                Invoke-Expression "& { $code } -NoLog -DontStart -SteamPath '$steamPath'"
-                return
-            }
-        } catch { Write-Warn "Millennium source failed: $url" }
-    }
-    throw "Could not fetch the Millennium installer."
+    # The Windows release zip holds wsock32.dll and the millennium\ folder, laid out to extract straight into the Steam root.
+    $best = Get-LatestReleaseInfo $MillenniumRepo
+    Write-Ok "Latest Millennium: $($best.Repo) @ $($best.Tag)"
+    $zip = Join-Path $Tmp 'millennium.zip'
+    Get-File (Get-LatestZipUrl $best.Repo $best.Tag 'windows-x86_64\.zip$') $zip
+    Expand-Into $zip $steamPath
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
 }
 
 function Install-OnlineFix($steamPath) {
